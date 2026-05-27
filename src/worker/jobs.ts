@@ -8,7 +8,24 @@ import {
   insertMigration,
   insertScript,
 } from "../lib/db/queries";
+import { query } from "../lib/db/client";
 import { pushWorkflow } from "../lib/superplane/client";
+
+// Re-scanning a script must be idempotent: a fresh agent pass produces a
+// fresh migration + danger set. Without this clear step the ledger query
+// (which aggregates ALL dangers for a script_id but only the latest
+// migration) ends up with stale flags multiplied across runs.
+async function clearPriorAgentOutput(scriptId: string): Promise<void> {
+  try {
+    await query(`DELETE FROM dangers WHERE script_id = $1`, [scriptId]);
+    await query(`DELETE FROM migrations WHERE script_id = $1`, [scriptId]);
+  } catch (err) {
+    console.warn(
+      `[worker] clearPriorAgentOutput failed for ${scriptId} (continuing):`,
+      err instanceof Error ? err.message : err
+    );
+  }
+}
 
 export type JobStatus = "queued" | "running" | "complete" | "failed";
 
@@ -213,6 +230,7 @@ async function processScanJob(
 
       job.progress.currentStep = "persist_migration";
       try {
+        await clearPriorAgentOutput(script.id);
         await insertMigration(finalMigration);
         await insertDangers(audit.flags);
       } catch (err) {
