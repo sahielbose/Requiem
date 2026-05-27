@@ -9,11 +9,13 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "db:migrate": "tsx src/lib/db/migrate.ts",
-    "db:seed": "tsx src/lib/db/seed.ts"
+    "db:seed": "tsx src/lib/db/seed.ts",
+    "worker": "tsx src/worker/index.ts"
   },
   "dependencies": {
     "@langchain/anthropic": "^1.4.0",
     "@langchain/core": "^1.1.48",
+    "@octokit/rest": "^22.0.1",
     "@types/pg": "^8.20.0",
     "dotenv": "^17.4.2",
     "next": "^15.1.0",

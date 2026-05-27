@@ -1,0 +1,238 @@
+import { randomUUID } from "node:crypto";
+import type { BashScript, MigrationResult, WorkflowStep } from "../lib/types";
+import { runMigrationAgent } from "../agents/migration-agent";
+import { runDangerAudit } from "../agents/danger-audit-agent";
+import {
+  appendAudit,
+  insertDangers,
+  insertMigration,
+  insertScript,
+} from "../lib/db/queries";
+import { pushWorkflow } from "../lib/superplane/client";
+
+export type JobStatus = "queued" | "running" | "complete" | "failed";
+
+export interface JobProgress {
+  total: number;
+  processed: number;
+  currentScript: string | null;
+  currentStep: string | null;
+}
+
+export interface JobWorkflowEntry {
+  scriptId: string;
+  filename: string;
+  workflowId: string;
+  canvasUrl: string;
+}
+
+export interface JobRecord {
+  id: string;
+  type: "scan";
+  repoUrl: string;
+  status: JobStatus;
+  progress: JobProgress;
+  errors: string[];
+  workflows: JobWorkflowEntry[];
+  createdAt: string;
+  finishedAt: string | null;
+}
+
+const jobs = new Map<string, JobRecord>();
+const jobInputs = new Map<string, BashScript[]>();
+const queue: string[] = [];
+let processing = false;
+
+export function enqueueScanJob(
+  repoUrl: string,
+  scripts: BashScript[]
+): JobRecord {
+  const id = `job_${randomUUID()}`;
+  const job: JobRecord = {
+    id,
+    type: "scan",
+    repoUrl,
+    status: "queued",
+    progress: {
+      total: scripts.length,
+      processed: 0,
+      currentScript: null,
+      currentStep: null,
+    },
+    errors: [],
+    workflows: [],
+    createdAt: new Date().toISOString(),
+    finishedAt: null,
+  };
+  jobs.set(id, job);
+  jobInputs.set(id, scripts);
+  queue.push(id);
+  void runQueue();
+  return job;
+}
+
+export function getJob(id: string): JobRecord | null {
+  return jobs.get(id) ?? null;
+}
+
+export function listJobs(): JobRecord[] {
+  return Array.from(jobs.values()).sort((a, b) =>
+    b.createdAt.localeCompare(a.createdAt)
+  );
+}
+
+async function runQueue(): Promise<void> {
+  if (processing) return;
+  processing = true;
+  try {
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      const job = jobs.get(id);
+      const scripts = jobInputs.get(id);
+      if (!job || !scripts) continue;
+      jobInputs.delete(id);
+      try {
+        await processScanJob(job, scripts);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        job.errors.push(`fatal: ${msg}`);
+        job.status = "failed";
+        job.finishedAt = new Date().toISOString();
+        console.error("[worker] job failed:", msg);
+      }
+    }
+  } finally {
+    processing = false;
+  }
+}
+
+function mergeWorkflow(
+  base: WorkflowStep[],
+  added: WorkflowStep[]
+): WorkflowStep[] {
+  const backups = added.filter((s) => s.type === "backup");
+  const gates = added.filter((s) => s.type === "approval_gate");
+  const healths = added.filter((s) => s.type === "health_check");
+
+  const result: WorkflowStep[] = [];
+
+  let pendingBackups = [...backups];
+  let pendingGates = [...gates];
+  let pendingHealths = [...healths];
+
+  for (const step of base) {
+    const isRisky =
+      step.type === "deploy" ||
+      step.type === "db_migration" ||
+      /restart|reload|apply/i.test(step.original);
+
+    if (isRisky) {
+      result.push(...pendingBackups);
+      pendingBackups = [];
+      result.push(...pendingGates);
+      pendingGates = [];
+    }
+
+    result.push(step);
+
+    if (isRisky && pendingHealths.length > 0) {
+      result.push(...pendingHealths);
+      pendingHealths = [];
+    }
+  }
+
+  // append leftovers defensively
+  result.push(...pendingBackups, ...pendingGates, ...pendingHealths);
+
+  return result.map((s, i) => ({ ...s, order: i + 1 }));
+}
+
+async function processScanJob(
+  job: JobRecord,
+  scripts: BashScript[]
+): Promise<void> {
+  job.status = "running";
+
+  try {
+    await appendAudit({
+      timestamp: new Date().toISOString(),
+      actor: "worker",
+      action: "scan_start",
+      detail: `job ${job.id}: ${scripts.length} script(s) from ${job.repoUrl}`,
+    });
+  } catch {
+    // tolerate audit log being unavailable
+  }
+
+  for (const script of scripts) {
+    job.progress.currentScript = script.filename;
+    try {
+      job.progress.currentStep = "insert_script";
+      try {
+        await insertScript(script);
+      } catch (err) {
+        console.warn(
+          `[worker] insertScript failed for ${script.filename} (continuing):`,
+          err instanceof Error ? err.message : err
+        );
+      }
+
+      job.progress.currentStep = "migration_agent";
+      const migration = await runMigrationAgent(script);
+
+      job.progress.currentStep = "danger_audit_agent";
+      const audit = await runDangerAudit(script, migration);
+
+      const mergedSteps = mergeWorkflow(migration.steps, audit.addedSteps);
+      const finalMigration: MigrationResult = {
+        ...migration,
+        steps: mergedSteps,
+      };
+
+      job.progress.currentStep = "persist_migration";
+      try {
+        await insertMigration(finalMigration);
+        await insertDangers(audit.flags);
+      } catch (err) {
+        console.warn(
+          `[worker] persist failed for ${script.filename} (continuing):`,
+          err instanceof Error ? err.message : err
+        );
+      }
+
+      job.progress.currentStep = "push_workflow";
+      const wf = await pushWorkflow(finalMigration);
+      job.workflows.push({
+        scriptId: script.id,
+        filename: script.filename,
+        workflowId: wf.workflowId,
+        canvasUrl: wf.canvasUrl,
+      });
+
+      job.progress.processed++;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      job.errors.push(`${script.filename}: ${msg}`);
+      console.error(`[worker] script ${script.filename} failed:`, msg);
+    }
+  }
+
+  job.progress.currentScript = null;
+  job.progress.currentStep = null;
+  job.status =
+    job.progress.processed === 0 && job.errors.length > 0
+      ? "failed"
+      : "complete";
+  job.finishedAt = new Date().toISOString();
+
+  try {
+    await appendAudit({
+      timestamp: new Date().toISOString(),
+      actor: "worker",
+      action: "scan_complete",
+      detail: `job ${job.id}: processed ${job.progress.processed}/${job.progress.total}, ${job.errors.length} error(s)`,
+    });
+  } catch {
+    // tolerate audit log being unavailable
+  }
+}
