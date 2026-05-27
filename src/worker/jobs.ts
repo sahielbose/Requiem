@@ -38,10 +38,32 @@ export interface JobRecord {
   finishedAt: string | null;
 }
 
-const jobs = new Map<string, JobRecord>();
-const jobInputs = new Map<string, BashScript[]>();
-const queue: string[] = [];
-let processing = false;
+// In Next.js dev mode each route handler bundles independently, so a plain
+// module-level Map ends up duplicated across routes (POST /api/scan would
+// write to one copy, GET /api/scan/status would read from another). Attaching
+// the singleton state to globalThis keeps every route pointing at the same
+// queue regardless of how Next compiles the bundles.
+interface WorkerSingleton {
+  jobs: Map<string, JobRecord>;
+  jobInputs: Map<string, BashScript[]>;
+  queue: string[];
+  processing: boolean;
+}
+
+const globalForWorker = globalThis as unknown as {
+  __requiemWorker?: WorkerSingleton;
+};
+
+const singleton: WorkerSingleton =
+  globalForWorker.__requiemWorker ??
+  (globalForWorker.__requiemWorker = {
+    jobs: new Map<string, JobRecord>(),
+    jobInputs: new Map<string, BashScript[]>(),
+    queue: [],
+    processing: false,
+  });
+
+const { jobs, jobInputs, queue } = singleton;
 
 export function enqueueScanJob(
   repoUrl: string,
@@ -82,8 +104,8 @@ export function listJobs(): JobRecord[] {
 }
 
 async function runQueue(): Promise<void> {
-  if (processing) return;
-  processing = true;
+  if (singleton.processing) return;
+  singleton.processing = true;
   try {
     while (queue.length > 0) {
       const id = queue.shift()!;
@@ -102,7 +124,7 @@ async function runQueue(): Promise<void> {
       }
     }
   } finally {
-    processing = false;
+    singleton.processing = false;
   }
 }
 
