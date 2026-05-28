@@ -6,6 +6,24 @@ import type {
   MigrationResult,
 } from "./types";
 
+export interface ScanJobStatus {
+  id: string;
+  status: "queued" | "running" | "complete" | "failed";
+  progress: {
+    total: number;
+    processed: number;
+    currentScript: string | null;
+    currentStep: string | null;
+  };
+  errors: string[];
+  workflows: Array<{
+    scriptId: string;
+    filename: string;
+    workflowId: string;
+    canvasUrl: string;
+  }>;
+}
+
 // Same-origin fetches by default — UI and API share the Next.js process on
 // localhost:3000 in dev and on the same Vercel/Render origin in prod.
 const API_BASE = "";
@@ -68,6 +86,26 @@ async function waitForScanComplete(jobId: string): Promise<JobStatus | null> {
   return null;
 }
 
+export async function startScan(
+  url: string
+): Promise<{ jobId: string; scriptCount: number; fellBackToSeed: boolean }> {
+  const res = await fetch(`${API_BASE}/api/scan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repoUrl: url }),
+    cache: "no-store",
+  });
+  return asJson<ScanResponse>(res);
+}
+
+export async function getScanStatus(jobId: string): Promise<ScanJobStatus> {
+  const res = await fetch(
+    `${API_BASE}/api/scan/status?jobId=${encodeURIComponent(jobId)}`,
+    { cache: "no-store" }
+  );
+  return asJson<ScanJobStatus>(res);
+}
+
 export async function scanRepo(url: string): Promise<BashScript[]> {
   const res = await fetch(`${API_BASE}/api/scan`, {
     method: "POST",
@@ -116,6 +154,16 @@ export async function getMigrations(): Promise<{
 export async function getIncidents(): Promise<Incident[]> {
   const res = await fetch(`${API_BASE}/api/incidents`, { cache: "no-store" });
   return asJson<Incident[]>(res);
+}
+
+export async function createIncident(scriptId: string): Promise<Incident> {
+  const res = await fetch(`${API_BASE}/api/incidents`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ scriptId }),
+    cache: "no-store",
+  });
+  return asJson<Incident>(res);
 }
 
 export async function approveIncident(

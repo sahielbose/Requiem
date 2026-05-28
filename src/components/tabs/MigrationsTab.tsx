@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { usePolling } from "@/lib/usePolling";
-import { getMigrations } from "@/lib/api";
+import { getMigrations, createIncident } from "@/lib/api";
 import type { DangerSeverity } from "@/lib/types";
 
 const severityClass: Record<DangerSeverity, string> = {
@@ -14,6 +14,20 @@ const severityClass: Record<DangerSeverity, string> = {
 export function MigrationsTab() {
   const { data, loading } = usePolling(getMigrations, 3000);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [incidentPending, setIncidentPending] = useState<string | null>(null);
+  const [incidentCreated, setIncidentCreated] = useState<Record<string, boolean>>({});
+
+  const onCreateIncident = async (scriptId: string) => {
+    setIncidentPending(scriptId);
+    try {
+      await createIncident(scriptId);
+      setIncidentCreated((prev) => ({ ...prev, [scriptId]: true }));
+    } catch (err) {
+      console.error("createIncident failed:", err);
+    } finally {
+      setIncidentPending(null);
+    }
+  };
 
   if (loading && !data)
     return <div className="text-sm text-muted">Loading ledger...</div>;
@@ -97,8 +111,26 @@ export function MigrationsTab() {
                     </ol>
                   </div>
                   <div>
-                    <div className="mb-2 text-xs uppercase tracking-widest text-muted">
-                      Danger flags
+                    <div className="mb-2 flex items-center justify-between">
+                      <div className="text-xs uppercase tracking-widest text-muted">
+                        Danger flags
+                      </div>
+                      {flags.some((f) => f.severity === "critical") && (
+                        <button
+                          onClick={() => onCreateIncident(m.scriptId)}
+                          disabled={
+                            incidentPending === m.scriptId ||
+                            incidentCreated[m.scriptId]
+                          }
+                          className="rounded-sm border border-critical/40 bg-critical/10 px-2 py-0.5 font-mono text-[11px] text-critical transition hover:bg-critical/20 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {incidentCreated[m.scriptId]
+                            ? "✔ incident created"
+                            : incidentPending === m.scriptId
+                            ? "creating..."
+                            : "create incident"}
+                        </button>
+                      )}
                     </div>
                     {flags.length === 0 ? (
                       <div className="rounded-sm border border-border bg-bg px-3 py-2 text-sm text-muted">

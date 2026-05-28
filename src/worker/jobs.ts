@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { BashScript, MigrationResult, WorkflowStep } from "../lib/types";
 import { runMigrationAgent } from "../agents/migration-agent";
 import { runDangerAudit } from "../agents/danger-audit-agent";
+import { runIncidentAgent } from "../agents/incident-agent";
 import {
   appendAudit,
   insertDangers,
@@ -248,6 +249,29 @@ async function processScanJob(
         workflowId: wf.workflowId,
         canvasUrl: wf.canvasUrl,
       });
+
+      const criticalFlags = audit.flags.filter((f) => f.severity === "critical");
+      if (criticalFlags.length > 0) {
+        job.progress.currentStep = "incident_agent";
+        try {
+          const alertSummary =
+            `${criticalFlags.length} critical danger${criticalFlags.length === 1 ? "" : "s"} in ${script.filename}: ` +
+            criticalFlags[0].pattern;
+          await runIncidentAgent(
+            script,
+            finalMigration,
+            audit.flags,
+            "Requiem Danger Audit",
+            alertSummary,
+            wf.workflowId
+          );
+        } catch (err) {
+          console.warn(
+            `[worker] incident agent failed for ${script.filename} (continuing):`,
+            err instanceof Error ? err.message : err
+          );
+        }
+      }
 
       job.progress.processed++;
     } catch (err) {
