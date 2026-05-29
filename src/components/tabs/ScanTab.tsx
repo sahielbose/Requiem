@@ -9,6 +9,7 @@ const STEP_LABELS: Record<string, string> = {
   insert_script: "persisting script",
   migration_agent: "running migration agent (Claude)",
   danger_audit_agent: "running danger audit agent",
+  reviewer_agent: "running reviewer agent (self-critique)",
   persist_migration: "persisting workflow",
   push_workflow: "pushing to SuperPlane",
   incident_agent: "running incident agent",

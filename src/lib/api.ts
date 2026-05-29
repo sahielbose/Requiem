@@ -1,10 +1,12 @@
 import type {
+  AuditEntry,
   BashScript,
   DangerFlag,
   ExecutionRecord,
   Incident,
   MigrationResult,
 } from "./types";
+import type { OverviewStats } from "./db/queries";
 
 export interface ScanJobStatus {
   id: string;
@@ -188,4 +190,27 @@ export async function approveIncident(
 export async function getExecutions(): Promise<ExecutionRecord[]> {
   const res = await fetch(`${API_BASE}/api/executions`, { cache: "no-store" });
   return asJson<ExecutionRecord[]>(res);
+}
+
+// ---------- overview ----------
+
+export async function getOverview(): Promise<OverviewStats> {
+  const res = await fetch(`${API_BASE}/api/overview`, { cache: "no-store" });
+  return asJson<OverviewStats>(res);
+}
+
+// ---------- audit log ----------
+
+export async function getAuditLogEntries(): Promise<AuditEntry[]> {
+  const res = await fetch(`${API_BASE}/api/audit`, { cache: "no-store" });
+  return asJson<AuditEntry[]>(res);
+}
+
+// ---------- export ----------
+
+export function exportReportUrl(repoUrl?: string): string {
+  if (repoUrl) {
+    return `${API_BASE}/api/export?repo=${encodeURIComponent(repoUrl)}`;
+  }
+  return `${API_BASE}/api/export`;
 }

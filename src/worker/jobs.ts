@@ -3,6 +3,7 @@ import type { BashScript, MigrationResult, WorkflowStep } from "../lib/types";
 import { runMigrationAgent } from "../agents/migration-agent";
 import { runDangerAudit } from "../agents/danger-audit-agent";
 import { runIncidentAgent } from "../agents/incident-agent";
+import { runReviewerAgent } from "../agents/reviewer-agent";
 import {
   appendAudit,
   insertDangers,
@@ -224,10 +225,25 @@ async function processScanJob(
       const audit = await runDangerAudit(script, migration);
 
       const mergedSteps = mergeWorkflow(migration.steps, audit.addedSteps);
-      const finalMigration: MigrationResult = {
+      let finalMigration: MigrationResult = {
         ...migration,
         steps: mergedSteps,
       };
+
+      // Reviewer agent: self-critique pass on the merged workflow.
+      job.progress.currentStep = "reviewer_agent";
+      try {
+        const review = await runReviewerAgent(script, finalMigration.steps);
+        if (!review.passed && review.addedSteps.length > 0) {
+          const patched = mergeWorkflow(finalMigration.steps, review.addedSteps);
+          finalMigration = { ...finalMigration, steps: patched };
+        }
+      } catch (err) {
+        console.warn(
+          `[worker] reviewer agent failed for ${script.filename} (continuing):`,
+          err instanceof Error ? err.message : err
+        );
+      }
 
       job.progress.currentStep = "persist_migration";
       try {

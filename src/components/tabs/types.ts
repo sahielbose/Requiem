@@ -1,1 +1,1 @@
-export type TabKey = "scan" | "migrations" | "incidents" | "executions";
+export type TabKey = "overview" | "scan" | "migrations" | "incidents" | "executions" | "audit";

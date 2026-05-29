@@ -281,6 +281,61 @@ export async function getExecutions(): Promise<ExecutionRecord[]> {
   }));
 }
 
+// ---------- overview stats ----------
+
+export interface OverviewStats {
+  totalScripts: number;
+  totalMigrations: number;
+  totalCriticalDangers: number;
+  totalWarningDangers: number;
+  incidentsAwaitingApproval: number;
+  mostCommonDangerPattern: string | null;
+  scriptsWithSafetyGatesAdded: number;
+  totalReposScanned: number;
+}
+
+export async function getOverviewStats(): Promise<OverviewStats> {
+  const result = await query<{
+    total_scripts: number;
+    total_migrations: number;
+    total_critical: number;
+    total_warning: number;
+    incidents_awaiting: number;
+    total_repos: number;
+    most_common_pattern: string | null;
+    scripts_with_gates: number;
+  }>(
+    `SELECT
+       (SELECT COUNT(*)::int FROM scripts)                         AS total_scripts,
+       (SELECT COUNT(*)::int FROM migrations WHERE status = 'migrated') AS total_migrations,
+       (SELECT COUNT(*)::int FROM dangers WHERE severity = 'critical') AS total_critical,
+       (SELECT COUNT(*)::int FROM dangers WHERE severity = 'warning')  AS total_warning,
+       (SELECT COUNT(*)::int FROM incidents WHERE status = 'awaiting_approval') AS incidents_awaiting,
+       (SELECT COUNT(DISTINCT repo_url)::int FROM scripts)         AS total_repos,
+       (SELECT pattern FROM dangers GROUP BY pattern ORDER BY COUNT(*) DESC LIMIT 1) AS most_common_pattern,
+       (
+         SELECT COUNT(DISTINCT m.script_id)::int
+           FROM migrations m
+          WHERE EXISTS (
+            SELECT 1
+              FROM jsonb_array_elements(m.steps) AS s
+             WHERE s->>'original' IN ('(added by danger-audit)', '(added by reviewer)')
+          )
+       ) AS scripts_with_gates`
+  );
+  const r = result.rows[0];
+  return {
+    totalScripts: r.total_scripts ?? 0,
+    totalMigrations: r.total_migrations ?? 0,
+    totalCriticalDangers: r.total_critical ?? 0,
+    totalWarningDangers: r.total_warning ?? 0,
+    incidentsAwaitingApproval: r.incidents_awaiting ?? 0,
+    mostCommonDangerPattern: r.most_common_pattern ?? null,
+    scriptsWithSafetyGatesAdded: r.scripts_with_gates ?? 0,
+    totalReposScanned: r.total_repos ?? 0,
+  };
+}
+
 // ---------- audit log ----------
 
 export async function appendAudit(entry: AuditEntry): Promise<AuditEntry> {

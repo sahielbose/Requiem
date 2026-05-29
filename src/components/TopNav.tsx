@@ -3,10 +3,12 @@
 import type { TabKey } from "./tabs/types";
 
 const tabs: { key: TabKey; label: string }[] = [
+  { key: "overview", label: "Overview" },
   { key: "scan", label: "Scan" },
   { key: "migrations", label: "Migrations" },
   { key: "incidents", label: "Incidents" },
   { key: "executions", label: "Executions" },
+  { key: "audit", label: "Audit log" },
 ];
 
 export function TopNav({
